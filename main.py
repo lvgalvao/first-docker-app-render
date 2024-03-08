@@ -1,53 +1,57 @@
-import boto3
-import pandas as pd
-import time
-from dotenv import load_dotenv
+# main.py
 import os
+import time
+import threading
+import boto3
+from dotenv import load_dotenv
+import streamlit as st
 
-# Carregar variáveis de ambiente do arquivo .env
+# Carregar variáveis de ambiente
 load_dotenv()
 
-# Configurações
+# Configurações da AWS S3
 bucket_name = os.getenv('AWS_BUCKET_NAME')
-access_key_id = os.getenv('AWS_ACCESS_KEY_ID')
-secret_access_key = os.getenv('AWS_SECRET_ACCESS_KEY')
-region_name = os.getenv('AWS_DEFAULT_REGION')
-
-# Configurar cliente S3 com credenciais explícitas (se necessário)
 s3_client = boto3.client(
     's3',
-    aws_access_key_id=access_key_id,
-    aws_secret_access_key=secret_access_key,
-    region_name=region_name
+    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+    region_name=os.getenv('AWS_DEFAULT_REGION')
 )
 
+# Lista global e Lock para sincronização
+arquivos_encontrados = []
+arquivos_lock = threading.Lock()
+
+# Função para listar arquivos CSV
 def listar_arquivos_csv():
-    """Lista todos os arquivos CSV no bucket especificado."""
     response = s3_client.list_objects_v2(Bucket=bucket_name)
     arquivos_csv = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.csv')]
     return arquivos_csv
 
-def carregar_csv_para_dataframe(nome_arquivo):
-    """Carrega um arquivo CSV do S3 para um DataFrame do pandas."""
-    obj = s3_client.get_object(Bucket=bucket_name, Key=nome_arquivo)
-    df = pd.read_csv(obj['Body'])
-    return df
-
-def main():
-    arquivos_processados = set()
-
+# Thread para monitorar novos arquivos
+def monitorar_s3():
+    global arquivos_encontrados
     while True:
-        print("Verificando por novos arquivos CSV...")
-        arquivos_csv = listar_arquivos_csv()
-        
-        for arquivo in arquivos_csv:
-            if arquivo not in arquivos_processados:
-                print(f"Processando {arquivo}...")
-                df = carregar_csv_para_dataframe(arquivo)
-                print(df.head())  # Exemplo de manipulação: mostrar as primeiras linhas
-                arquivos_processados.add(arquivo)
-        
-        time.sleep(30)  # Espera por 30 segundos antes de verificar novamente
+        arquivos_csv_atual = listar_arquivos_csv()
+        with arquivos_lock:  # Usar o Lock para sincronização
+            novos_arquivos = [arq for arq in arquivos_csv_atual if arq not in arquivos_encontrados]
+            for arquivo in novos_arquivos:
+                print(f"Novo arquivo encontrado: {arquivo}")
+                arquivos_encontrados.append(arquivo)
+        time.sleep(30)
 
+# Função principal do Streamlit
+def streamlit_app():
+    st.title('Lista de Arquivos CSV no S3')
+
+    if st.button('Atualizar Lista'):
+        with arquivos_lock:  # Sincronizar o acesso à lista global
+            arquivos_atuais = listar_arquivos_csv()  # Sempre pegar a lista atual do bucket
+        st.write(arquivos_atuais)
+
+# Iniciar thread de monitoramento
+threading.Thread(target=monitorar_s3, daemon=True).start()
+
+# Executar aplicação Streamlit
 if __name__ == '__main__':
-    main()
+    streamlit_app()
